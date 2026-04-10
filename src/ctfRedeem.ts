@@ -384,6 +384,40 @@ export async function sendRedeemViaGnosisSafe(args: {
   return out;
 }
 
+function patchRelayerHttpClientApiKeyHeaders(
+  client: RelayClient,
+  apiKey: string,
+  apiKeyAddress: string,
+): void {
+  const key = apiKey.trim();
+  const addr = utils.getAddress(apiKeyAddress.trim());
+  const http = (
+    client as unknown as {
+      httpClient: {
+        send: (
+          endpoint: string,
+          method: string,
+          options?: {
+            headers?: Record<string, string>;
+            data?: unknown;
+            params?: unknown;
+          },
+        ) => Promise<unknown>;
+      };
+    }
+  ).httpClient;
+  const orig = http.send.bind(http);
+  http.send = (endpoint, method, options) =>
+    orig(endpoint, method, {
+      ...options,
+      headers: {
+        ...(options?.headers as Record<string, string> | undefined),
+        RELAYER_API_KEY: key,
+        RELAYER_API_KEY_ADDRESS: addr,
+      },
+    });
+}
+
 async function redeemThroughRelayClient(args: {
   relayerUrl: string;
   privateKey: string;
@@ -396,6 +430,9 @@ async function redeemThroughRelayClient(args: {
   relayTxType: RelayerTxType;
   metadata: string;
   indexSets?: number[];
+  /** Вместе с адресом — обязательные заголовки для Settings → API Key (SDK сам их не ставит). */
+  relayerApiKey?: string;
+  relayerApiKeyAddress?: string;
 }): Promise<Record<string, unknown>> {
   const idx = args.indexSets ?? [1, 2];
   const pk = normalizePk(args.privateKey);
@@ -421,6 +458,12 @@ async function redeemThroughRelayClient(args: {
     args.builderConfig,
     args.relayTxType,
   );
+
+  const rk = (args.relayerApiKey ?? "").trim();
+  const ra = (args.relayerApiKeyAddress ?? "").trim();
+  if (rk && ra && args.builderConfig == null) {
+    patchRelayerHttpClientApiKeyHeaders(client, rk, ra);
+  }
 
   if (args.relayTxType === RelayerTxType.SAFE) {
     const safeAddr = await (
@@ -502,6 +545,8 @@ export async function sendRedeemViaLegacyGaslessRelay(args: {
   relayTxType: RelayerTxType;
   polygonRpcUrl?: string;
   indexSets?: number[];
+  relayerApiKey: string;
+  relayerApiKeyAddress: string;
 }): Promise<Record<string, unknown>> {
   const rpc =
     (args.polygonRpcUrl ?? "").trim() ||
@@ -518,5 +563,7 @@ export async function sendRedeemViaLegacyGaslessRelay(args: {
     relayTxType: args.relayTxType,
     metadata: "Redeem CTF positions (bot, legacy relayer)",
     indexSets: args.indexSets,
+    relayerApiKey: args.relayerApiKey,
+    relayerApiKeyAddress: args.relayerApiKeyAddress,
   });
 }

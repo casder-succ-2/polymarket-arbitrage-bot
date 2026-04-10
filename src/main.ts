@@ -16,6 +16,8 @@ import {
 import { DumpHedgeTrader } from "./dumpHedgeTrader";
 import {
   configureHistoryDir,
+  configureHistoryFilesEnabled,
+  configureTradeOpenLogsOnly,
   logPrintln,
   setHistoryLogPeriod,
 } from "./historyLog";
@@ -165,6 +167,13 @@ async function main(): Promise<void> {
   }
 
   configureHistoryDir(cfg.historyLogDir);
+  configureHistoryFilesEnabled(cfg.historyLogEnabled);
+  configureTradeOpenLogsOnly(cfg.trading.tradeOpenLogsOnly);
+  if (!cfg.historyLogEnabled) {
+    process.stderr.write(
+      "[history] HISTORY_LOG_ENABLED=false — файлы period-*.toml не пишутся.\n",
+    );
+  }
 
   if (!simulation && cfg.polymarket.autoRedeem) {
     if (cfg.polymarket.redeemUseRelayer) {
@@ -180,10 +189,12 @@ async function main(): Promise<void> {
       }
     } else if (
       cfg.polymarket.signatureType !== 0 &&
-      (cfg.polymarket.relayerApiKey ?? "").trim()
+      (cfg.polymarket.relayerApiKey ?? "").trim() &&
+      (cfg.polymarket.relayerApiKeyAddress ?? "").trim()
     ) {
       process.stderr.write(
-        "Redeem: gasless RelayClient (RELAYER_API_KEY), PROXY при SIGNATURE_TYPE=1, SAFE при 2.\n",
+        "Redeem: gasless RelayClient (RELAYER_API_KEY + RELAYER_API_KEY_ADDRESS), " +
+          "PROXY при SIGNATURE_TYPE=1, SAFE при 2.\n",
       );
     } else {
       const proxy = (cfg.polymarket.proxyWalletAddress ?? "").trim();
@@ -205,6 +216,12 @@ async function main(): Promise<void> {
 
   const api = new PolymarketApi(cfg.polymarket, clobClient);
   const tc = cfg.trading;
+
+  if (!simulation && cfg.polymarket.autoRedeem) {
+    void api.sweepRedeemablePositions().catch((e) => {
+      process.stderr.write(`[sweep redeemable startup] ${e}\n`);
+    });
+  }
 
   if (!tc.markets.length) {
     process.stderr.write("No markets configured. Set MARKETS in .env\n");
@@ -249,22 +266,13 @@ async function main(): Promise<void> {
   logPrintln(`[startup] period=${initialPeriod} | ${mode}`);
   process.stderr.write("Strategy: DUMP-AND-HEDGE\n");
 
-  let sweepTicks = 0;
-  const sweepEveryN = Math.max(
-    1,
-    Math.round(60 / tc.marketClosureCheckIntervalSeconds),
-  );
   setInterval(() => {
     try {
       trader.checkMarketClosure();
       if (!simulation && cfg.polymarket.autoRedeem) {
-        sweepTicks += 1;
-        if (sweepTicks >= sweepEveryN) {
-          sweepTicks = 0;
-          void api.sweepRedeemablePositions().catch((e) => {
-            process.stderr.write(`[sweep redeemable] ${e}\n`);
-          });
-        }
+        void api.sweepRedeemablePositions().catch((e) => {
+          process.stderr.write(`[sweep redeemable] ${e}\n`);
+        });
       }
       const tp = trader.getTotalProfit();
       const pp = trader.getPeriodProfit();

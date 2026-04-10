@@ -5,7 +5,7 @@
 import { PolymarketApi } from "./api";
 import type { AppConfig } from "./config";
 import { timeframeDurationSeconds } from "./config";
-import { logPrintln } from "./historyLog";
+import { logPrintln, logTradeOpen } from "./historyLog";
 import type { CycleTrade, MarketData, MarketSnapshot } from "./models";
 import { tokenPriceAsk, tokenPriceBid } from "./models";
 
@@ -133,9 +133,13 @@ export class DumpHedgeTrader {
   }
 
   processSnapshot(snapshot: MarketSnapshot): void {
-    this.snapshotChain = this.snapshotChain.then(() =>
-      this.processSnapshotUnlocked(snapshot),
-    );
+    this.snapshotChain = this.snapshotChain
+      .then(() => this.processSnapshotUnlocked(snapshot))
+      .catch((e) => {
+        process.stderr.write(
+          `[${snapshot.marketName}] trader snapshot: ${e}\n`,
+        );
+      });
   }
 
   private appendPrice(
@@ -243,7 +247,7 @@ export class DumpHedgeTrader {
     if (ph.kind === "WatchingForDump") {
       if (currentTime > ph.windowEndTime) return;
       if (this.checkDump(s.upPriceHistory, nowF)) {
-        logPrintln(
+        logTradeOpen(
           `${marketName}: UP dump detected! Buying ${this.shares} shares @ $${upAsk.toFixed(4)}`,
         );
         if (s.upTokenId) {
@@ -271,7 +275,7 @@ export class DumpHedgeTrader {
         return;
       }
       if (this.checkDump(s.downPriceHistory, nowF)) {
-        logPrintln(
+        logTradeOpen(
           `${marketName}: DOWN dump detected! Buying ${this.shares} shares @ $${downAsk.toFixed(4)}`,
         );
         if (s.downTokenId) {
@@ -303,7 +307,7 @@ export class DumpHedgeTrader {
     if (ph.kind === "PendingLeg1Buy") {
       if (!ph.buyResult.done) return;
       if (ph.buyResult.success) {
-        logPrintln(
+        logTradeOpen(
           `${marketName}: Leg1 BUY ${ph.leg1Side} подтверждён @ $${ph.leg1Price.toFixed(4)}`,
         );
         this.recordTrade(
@@ -322,7 +326,7 @@ export class DumpHedgeTrader {
           leg1Shares: ph.leg1Shares,
         };
       } else {
-        logPrintln(
+        logTradeOpen(
           `${marketName}: Leg1 BUY ${ph.leg1Side} FAILED — возврат к мониторингу`,
         );
         s.phase = {
@@ -356,7 +360,7 @@ export class DumpHedgeTrader {
               periodTimestamp,
             );
           } else {
-            logPrintln(
+            logTradeOpen(
               `${marketName}: STOP LOSS TRIGGERED (Hedge not met after ${this.stopLossMaxWait} min from market open) | Buying opposite to hedge`,
             );
             await this.executeStopLossHedge(
@@ -376,10 +380,10 @@ export class DumpHedgeTrader {
       }
 
       if (totalPrice <= this.sumTarget && oppositeToken) {
-        logPrintln(
+        logTradeOpen(
           `${marketName}: Hedge condition met! Leg1: $${ph.leg1EntryPrice.toFixed(4)} + Opposite: $${oppositeAsk.toFixed(4)} = $${totalPrice.toFixed(4)} <= ${this.sumTarget}`,
         );
-        logPrintln(
+        logTradeOpen(
           `${marketName}: Buying ${this.shares} ${oppositeSide} shares @ $${oppositeAsk.toFixed(4)} (Leg 2)`,
         );
         await this.executeBuy(
@@ -457,7 +461,7 @@ export class DumpHedgeTrader {
     periodTimestamp: number,
   ): Promise<void> {
     const hedgePrice = this.sumTarget - ph.leg1EntryPrice;
-    logPrintln(
+    logTradeOpen(
       `${marketName}: STOP LOSS (time) — лимитная лестница | BUY ${oppositeSide} @ $${oppositeAsk.toFixed(4)} (страховка), цель хеджа: $${hedgePrice.toFixed(4)}`,
     );
     const sz = Math.round(ph.leg1Shares * 10000) / 10000;
@@ -472,7 +476,7 @@ export class DumpHedgeTrader {
           state.conditionId,
         );
       } catch (e) {
-        logPrintln(
+        logTradeOpen(
           `${marketName}: Не удалось купить страховку (${e}), fallback — рыночный хедж`,
         );
         await this.executeStopLossHedge(
@@ -590,7 +594,7 @@ export class DumpHedgeTrader {
         );
         return;
       }
-      logPrintln(
+      logTradeOpen(
         `${ph.marketName}: Ladder: ${ph.insuranceSide} вернулся к $${ph.insuranceBuyPrice.toFixed(4)} (bid=$${insBid.toFixed(4)}) — ставим SELL`,
       );
       if (!this.simulation) {
@@ -606,7 +610,7 @@ export class DumpHedgeTrader {
           ph.sellFailures = 0;
         } catch (e) {
           const errStr = String(e);
-          logPrintln(`${ph.marketName}: Ladder SELL ошибка: ${e}`);
+          logTradeOpen(`${ph.marketName}: Ladder SELL ошибка: ${e}`);
           ph.sellFailures += 1;
           if (errStr.toLowerCase().includes("not enough balance")) {
             const m = BALANCE_RE.exec(errStr);
@@ -629,7 +633,7 @@ export class DumpHedgeTrader {
           }
         }
       } else {
-        logPrintln(
+        logTradeOpen(
           `${ph.marketName}: SIM SELL ${ph.insuranceSide} ${ph.insuranceShares} @ $${ph.insuranceBuyPrice.toFixed(4)}`,
         );
         this.recordSell(
@@ -682,7 +686,7 @@ export class DumpHedgeTrader {
     const insAsk = ph.insuranceSide === "Down" ? downAsk : upAsk;
 
     if (insAsk <= ph.hedgePrice + 1e-9) {
-      logPrintln(
+      logTradeOpen(
         `${ph.marketName}: Ladder: хедж достигнут! ${ph.insuranceSide} ASK=$${insAsk.toFixed(4)} <= $${ph.hedgePrice.toFixed(4)} — BUY`,
       );
       const sz = Math.round(ph.insuranceShares * 10000) / 10000;
@@ -697,7 +701,7 @@ export class DumpHedgeTrader {
             state.conditionId,
           );
         } catch (e) {
-          logPrintln(`${ph.marketName}: Ladder hedge BUY ошибка: ${e}`);
+          logTradeOpen(`${ph.marketName}: Ladder hedge BUY ошибка: ${e}`);
           return;
         }
       }
@@ -738,7 +742,7 @@ export class DumpHedgeTrader {
     }
 
     if (ph.priceDipped && insAsk >= ph.insuranceBuyPrice - 1e-9) {
-      logPrintln(
+      logTradeOpen(
         `${ph.marketName}: Ladder: повторная страховка — BUY ${ph.insuranceSide} @ $${insAsk.toFixed(4)} (цикл ${ph.cycleCount + 1})`,
       );
       const buySz = Math.round(ph.insuranceShares * 10000) / 10000;
@@ -753,7 +757,9 @@ export class DumpHedgeTrader {
             state.conditionId,
           );
         } catch (e) {
-          logPrintln(`${ph.marketName}: Ladder re-insurance BUY ошибка: ${e}`);
+          logTradeOpen(
+            `${ph.marketName}: Ladder re-insurance BUY ошибка: ${e}`,
+          );
           return;
         }
       }
@@ -853,11 +859,11 @@ export class DumpHedgeTrader {
     conditionId: string,
     buyResult: BuyResult,
   ): void {
-    logPrintln(
+    logTradeOpen(
       `${marketName} BUY ${side} ${shares} shares @ $${price.toFixed(4)}`,
     );
     if (this.simulation) {
-      logPrintln("SIMULATION: Order executed");
+      logTradeOpen("SIMULATION: Order executed");
       buyResult.success = true;
       buyResult.done = true;
       return;
@@ -892,11 +898,11 @@ export class DumpHedgeTrader {
           referencePrice: price,
         },
       );
-      logPrintln(`${marketName}: REAL: Order placed (async)`);
+      logTradeOpen(`${marketName}: REAL: Order placed (async)`);
       buyResult.success = true;
       buyResult.done = true;
     } catch (e) {
-      logPrintln(`${marketName}: Order FAILED: ${e}`);
+      logTradeOpen(`${marketName}: Order FAILED: ${e}`);
       buyResult.success = false;
       buyResult.done = true;
     }
@@ -910,11 +916,11 @@ export class DumpHedgeTrader {
     price: number,
     conditionId: string,
   ): Promise<void> {
-    logPrintln(
+    logTradeOpen(
       `${marketName} BUY ${side} ${shares} shares @ $${price.toFixed(4)}`,
     );
     if (this.simulation) {
-      logPrintln("SIMULATION: Order executed");
+      logTradeOpen("SIMULATION: Order executed");
       return;
     }
     const size = Math.round(shares * 10000) / 10000;
@@ -929,9 +935,9 @@ export class DumpHedgeTrader {
           referencePrice: price,
         },
       );
-      logPrintln("REAL: Order placed");
+      logTradeOpen("REAL: Order placed");
     } catch (e) {
-      process.stderr.write(`Failed to place order: ${e}\n`);
+      logTradeOpen(`Failed to place order: ${e}`);
       throw e;
     }
   }
@@ -947,7 +953,7 @@ export class DumpHedgeTrader {
     oppositeAsk: number,
     periodTimestamp: number,
   ): Promise<void> {
-    logPrintln(
+    logTradeOpen(
       `${marketName}: STOP LOSS HEDGE - Buying ${leg1Shares} ${oppositeSide} shares @ $${oppositeAsk.toFixed(4)}`,
     );
     await this.executeBuy(

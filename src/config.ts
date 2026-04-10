@@ -97,6 +97,8 @@ export interface TradingConfig {
   websocketDebounceMs: number;
   monitorUseHttp: boolean;
   marketClosureCheckIntervalSeconds: number;
+  /** Только логи по ордерам / открытию ног (без тиков цен, ожидания хеджа и т.п.). */
+  tradeOpenLogsOnly: boolean;
   markets: string[];
   upDownTimeframe: UpDownTimeframe;
   dumpHedgeShares: number;
@@ -112,6 +114,8 @@ export interface AppConfig {
   polymarket: PolymarketConfig;
   trading: TradingConfig;
   simulation: boolean;
+  /** false — не писать `period-*.toml` в `historyLogDir` (stderr без изменений). */
+  historyLogEnabled: boolean;
   historyLogDir: string;
 }
 
@@ -158,6 +162,7 @@ export function loadConfig(options?: {
         "MARKET_CLOSURE_CHECK_INTERVAL_SECONDS",
         20,
       ),
+      tradeOpenLogsOnly: envBool("TRADE_OPEN_LOGS_ONLY", false),
       markets: envList("MARKETS", ["btc"]).map((m) => m.toLowerCase()),
       upDownTimeframe: tf,
       dumpHedgeShares: envFloat("DUMP_HEDGE_SHARES", 10),
@@ -178,6 +183,7 @@ export function loadConfig(options?: {
       ),
     },
     simulation,
+    historyLogEnabled: envBool("HISTORY_LOG_ENABLED", true),
     historyLogDir: (envOpt("HISTORY_LOG_DIR") ?? "logs").trim() || "logs",
   };
 }

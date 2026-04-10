@@ -67,6 +67,7 @@ export class PolymarketApi {
   private readonly clob: string;
   private readonly clobTrading: ClobClient | null;
   private readonly makerFeeBps = new Map<string, number>();
+  private redeemSweepInFlight = false;
 
   constructor(cfg: PolymarketConfig, clobTrading: ClobClient | null = null) {
     this.cfg = cfg;
@@ -420,7 +421,8 @@ export class PolymarketApi {
       (this.cfg.polygonRpcUrl ?? "").trim() || DEFAULT_POLYGON_RPC_URL;
 
     const legacyKey = (this.cfg.relayerApiKey ?? "").trim();
-    if (legacyKey && this.cfg.signatureType !== 0) {
+    const legacyAddr = (this.cfg.relayerApiKeyAddress ?? "").trim();
+    if (legacyKey && legacyAddr && this.cfg.signatureType !== 0) {
       const rtx =
         this.cfg.signatureType === 1 ? RelayerTxType.PROXY : RelayerTxType.SAFE;
       try {
@@ -433,6 +435,8 @@ export class PolymarketApi {
           conditionIdHex: conditionId,
           relayTxType: rtx,
           polygonRpcUrl: rpc,
+          relayerApiKey: legacyKey,
+          relayerApiKeyAddress: legacyAddr,
         });
         return { ...out, condition_id: conditionId };
       } catch (e) {
@@ -488,47 +492,86 @@ export class PolymarketApi {
     return this.redeemPositionsForCondition(conditionId);
   }
 
-  /** Периодический sweep redeemable-позиций (data-api), как в старом боте. */
+  /**
+   * Claim по кошельку: data-api «всё redeemable», не только сделки текущей сессии.
+   * Пагинация + лимит попыток за проход (анти-429).
+   */
   async sweepRedeemablePositions(): Promise<void> {
     if (!this.cfg.autoRedeem) return;
+    if (this.redeemSweepInFlight) return;
+    this.redeemSweepInFlight = true;
     const user = (
       this.cfg.proxyWalletAddress ??
       this.cfg.relayerApiKeyAddress ??
       ""
     ).trim();
-    if (!user) return;
+    if (!user) {
+      this.redeemSweepInFlight = false;
+      return;
+    }
     let wallet: string;
     try {
       wallet = utils.getAddress(user);
     } catch {
+      this.redeemSweepInFlight = false;
       return;
     }
-    const base = "https://data-api.polymarket.com/positions";
-    const q = new URLSearchParams({
-      user: wallet,
-      redeemable: "true",
-      sizeThreshold: "0",
-      limit: "100",
-    });
-    const url = `${base}?${q.toString()}`;
+
+    const pageLimit = 100;
+    const maxPages = 10;
+    const maxRedeemsPerRun = 12;
+    const pauseMs = 3500;
+    const seen = new Set<string>();
+
     try {
-      const { data } = await requestJson(url);
-      if (!Array.isArray(data)) return;
-      const seen = new Set<string>();
-      for (const row of data) {
-        if (typeof row !== "object" || row == null) continue;
-        const r = row as Record<string, unknown>;
-        const cid = String(r.conditionId ?? r.condition_id ?? "").trim();
-        if (!cid || seen.has(cid)) continue;
-        seen.add(cid);
-        const tokenId = String(
-          r.asset ?? r.tokenId ?? r.clobTokenId ?? r.clob_token_id ?? "",
-        );
-        const outcome = String(r.outcome ?? "");
-        await this.redeemTokens(cid, tokenId, outcome);
+      let redeemed = 0;
+      let offset = 0;
+      for (
+        let page = 0;
+        page < maxPages && redeemed < maxRedeemsPerRun;
+        page++
+      ) {
+        const q = new URLSearchParams({
+          user: wallet,
+          redeemable: "true",
+          sizeThreshold: "0",
+          limit: String(pageLimit),
+          offset: String(offset),
+        });
+        const url = `https://data-api.polymarket.com/positions?${q}`;
+        const { data } = await requestJson(url);
+        if (!Array.isArray(data) || data.length === 0) break;
+
+        for (const row of data) {
+          if (redeemed >= maxRedeemsPerRun) break;
+          if (typeof row !== "object" || row == null) continue;
+          const rec = row as Record<string, unknown>;
+          const cid = String(rec.conditionId ?? rec.condition_id ?? "").trim();
+          if (!cid || seen.has(cid)) continue;
+          seen.add(cid);
+          const tokenId = String(
+            rec.asset ??
+              rec.tokenId ??
+              rec.clobTokenId ??
+              rec.clob_token_id ??
+              "",
+          );
+          const outcome = String(rec.outcome ?? "");
+          await this.redeemTokens(cid, tokenId, outcome);
+          redeemed += 1;
+          if (redeemed < maxRedeemsPerRun) {
+            await new Promise((res) => setTimeout(res, pauseMs));
+          }
+        }
+
+        if (redeemed >= maxRedeemsPerRun) break;
+        offset += pageLimit;
+        if (data.length < pageLimit) break;
       }
     } catch (e) {
       process.stderr.write(`[sweep redeemable] ${e}\n`);
+    } finally {
+      this.redeemSweepInFlight = false;
     }
   }
 }
