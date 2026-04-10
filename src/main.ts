@@ -178,6 +178,13 @@ async function main(): Promise<void> {
             "POLY_BUILDER_API_KEY / POLY_BUILDER_SECRET / POLY_BUILDER_PASSPHRASE.\n",
         );
       }
+    } else if (
+      cfg.polymarket.signatureType !== 0 &&
+      (cfg.polymarket.relayerApiKey ?? "").trim()
+    ) {
+      process.stderr.write(
+        "Redeem: gasless RelayClient (RELAYER_API_KEY), PROXY при SIGNATURE_TYPE=1, SAFE при 2.\n",
+      );
     } else {
       const proxy = (cfg.polymarket.proxyWalletAddress ?? "").trim();
       const rpc =
@@ -242,9 +249,23 @@ async function main(): Promise<void> {
   logPrintln(`[startup] period=${initialPeriod} | ${mode}`);
   process.stderr.write("Strategy: DUMP-AND-HEDGE\n");
 
+  let sweepTicks = 0;
+  const sweepEveryN = Math.max(
+    1,
+    Math.round(60 / tc.marketClosureCheckIntervalSeconds),
+  );
   setInterval(() => {
     try {
       trader.checkMarketClosure();
+      if (!simulation && cfg.polymarket.autoRedeem) {
+        sweepTicks += 1;
+        if (sweepTicks >= sweepEveryN) {
+          sweepTicks = 0;
+          void api.sweepRedeemablePositions().catch((e) => {
+            process.stderr.write(`[sweep redeemable] ${e}\n`);
+          });
+        }
+      }
       const tp = trader.getTotalProfit();
       const pp = trader.getPeriodProfit();
       if (tp !== 0 || pp !== 0) {

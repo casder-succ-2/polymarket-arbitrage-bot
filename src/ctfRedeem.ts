@@ -3,7 +3,7 @@
  * JSON-RPC via fetch; txs via ethers v5.
  */
 
-import { RelayClient } from "@polymarket/builder-relayer-client";
+import { RelayClient, RelayerTxType } from "@polymarket/builder-relayer-client";
 import { BuilderConfig } from "@polymarket/builder-signing-sdk";
 import {
   constants,
@@ -384,16 +384,17 @@ export async function sendRedeemViaGnosisSafe(args: {
   return out;
 }
 
-export async function sendRedeemViaPolymarketRelayer(args: {
+async function redeemThroughRelayClient(args: {
   relayerUrl: string;
   privateKey: string;
   chainId: number;
   collateralToken: string;
   ctfContract: string;
   conditionIdHex: string;
-  builderApiKey: string;
-  builderSecret: string;
-  builderPassphrase: string;
+  rpcUrl: string;
+  builderConfig?: BuilderConfig;
+  relayTxType: RelayerTxType;
+  metadata: string;
   indexSets?: number[];
 }): Promise<Record<string, unknown>> {
   const idx = args.indexSets ?? [1, 2];
@@ -404,19 +405,9 @@ export async function sendRedeemViaPolymarketRelayer(args: {
     indexSets: idx,
   });
 
-  const builderConfig = new BuilderConfig({
-    localBuilderCreds: {
-      key: args.builderApiKey.trim(),
-      secret: args.builderSecret.trim(),
-      passphrase: args.builderPassphrase.trim(),
-    },
-  });
-
   const hex = pk as `0x${string}`;
   const account = privateKeyToAccount(hex);
-  const rpc =
-    process.env.POLYGON_RPC_URL?.trim() ||
-    "https://polygon-bor-rpc.publicnode.com";
+  const rpc = args.rpcUrl.trim() || "https://polygon-bor-rpc.publicnode.com";
   const viemWallet: WalletClient = createWalletClient({
     account,
     chain: polygon,
@@ -427,23 +418,26 @@ export async function sendRedeemViaPolymarketRelayer(args: {
     args.relayerUrl.replace(/\/$/, ""),
     args.chainId,
     viemWallet as never,
-    builderConfig,
+    args.builderConfig,
+    args.relayTxType,
   );
 
-  const safeAddr = await (
-    client as unknown as { getExpectedSafe: () => Promise<string> }
-  ).getExpectedSafe();
-  const deployed = await client.getDeployed(safeAddr);
-  if (!deployed) {
-    throw new Error(
-      `Для relayer-redeem нужен задеплоенный Safe (${safeAddr}). ` +
-        "См. https://docs.polymarket.com/developers/builders/relayer-client",
-    );
+  if (args.relayTxType === RelayerTxType.SAFE) {
+    const safeAddr = await (
+      client as unknown as { getExpectedSafe: () => Promise<string> }
+    ).getExpectedSafe();
+    const deployed = await client.getDeployed(safeAddr);
+    if (!deployed) {
+      throw new Error(
+        `Для relayer-redeem (SAFE) нужен задеплоенный Safe (${safeAddr}). ` +
+          "См. https://docs.polymarket.com/developers/builders/relayer-client",
+      );
+    }
   }
 
   const resp = await client.execute(
     [{ to: utils.getAddress(args.ctfContract), data, value: "0" }],
-    "Redeem CTF positions (bot)",
+    args.metadata,
   );
   const result = await resp.wait();
   if (result == null) {
@@ -456,5 +450,73 @@ export async function sendRedeemViaPolymarketRelayer(args: {
     mode: "relayer",
     tx_hash: resp.transactionHash,
     transaction_id: resp.transactionID,
+    relay_tx_type: args.relayTxType,
   };
+}
+
+export async function sendRedeemViaPolymarketRelayer(args: {
+  relayerUrl: string;
+  privateKey: string;
+  chainId: number;
+  collateralToken: string;
+  ctfContract: string;
+  conditionIdHex: string;
+  builderApiKey: string;
+  builderSecret: string;
+  builderPassphrase: string;
+  indexSets?: number[];
+}): Promise<Record<string, unknown>> {
+  const builderConfig = new BuilderConfig({
+    localBuilderCreds: {
+      key: args.builderApiKey.trim(),
+      secret: args.builderSecret.trim(),
+      passphrase: args.builderPassphrase.trim(),
+    },
+  });
+  const rpc =
+    process.env.POLYGON_RPC_URL?.trim() ||
+    "https://polygon-bor-rpc.publicnode.com";
+  return redeemThroughRelayClient({
+    relayerUrl: args.relayerUrl,
+    privateKey: args.privateKey,
+    chainId: args.chainId,
+    collateralToken: args.collateralToken,
+    ctfContract: args.ctfContract,
+    conditionIdHex: args.conditionIdHex,
+    rpcUrl: rpc,
+    builderConfig,
+    relayTxType: RelayerTxType.SAFE,
+    metadata: "Redeem CTF positions (bot, POLY_BUILDER)",
+    indexSets: args.indexSets,
+  });
+}
+
+/** Gasless relay без POLY_BUILDER: `RelayerTxType.PROXY` (Magic) или `SAFE` (browser proxy). */
+export async function sendRedeemViaLegacyGaslessRelay(args: {
+  relayerUrl: string;
+  privateKey: string;
+  chainId: number;
+  collateralToken: string;
+  ctfContract: string;
+  conditionIdHex: string;
+  relayTxType: RelayerTxType;
+  polygonRpcUrl?: string;
+  indexSets?: number[];
+}): Promise<Record<string, unknown>> {
+  const rpc =
+    (args.polygonRpcUrl ?? "").trim() ||
+    process.env.POLYGON_RPC_URL?.trim() ||
+    "https://polygon-bor-rpc.publicnode.com";
+  return redeemThroughRelayClient({
+    relayerUrl: args.relayerUrl,
+    privateKey: args.privateKey,
+    chainId: args.chainId,
+    collateralToken: args.collateralToken,
+    ctfContract: args.ctfContract,
+    conditionIdHex: args.conditionIdHex,
+    rpcUrl: rpc,
+    relayTxType: args.relayTxType,
+    metadata: "Redeem CTF positions (bot, legacy relayer)",
+    indexSets: args.indexSets,
+  });
 }

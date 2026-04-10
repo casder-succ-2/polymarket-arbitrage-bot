@@ -83,6 +83,9 @@ export interface PolymarketConfig {
   autoRedeem: boolean;
   redeemUseRelayer: boolean;
   relayerUrl: string;
+  /** Как раньше: gasless redeem через Settings → API Key (не POLY_BUILDER). */
+  relayerApiKey?: string;
+  relayerApiKeyAddress?: string;
   polyBuilderApiKey?: string;
   polyBuilderSecret?: string;
   polyBuilderPassphrase?: string;
@@ -137,6 +140,8 @@ export function loadConfig(options?: {
       autoRedeem: envBool("AUTO_REDEEM", true),
       redeemUseRelayer: envBool("REDEEM_USE_RELAYER", false),
       relayerUrl: relayerTrim || DEFAULT_RELAYER_URL,
+      relayerApiKey: envOpt("RELAYER_API_KEY"),
+      relayerApiKeyAddress: envOpt("RELAYER_API_KEY_ADDRESS"),
       polyBuilderApiKey: envOpt("POLY_BUILDER_API_KEY"),
       polyBuilderSecret: envOpt("POLY_BUILDER_SECRET"),
       polyBuilderPassphrase: envOpt("POLY_BUILDER_PASSPHRASE"),

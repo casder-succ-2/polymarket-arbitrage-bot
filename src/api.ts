@@ -2,6 +2,7 @@
  * Polymarket Gamma + CLOB + optional trading client (Python `polymarket_api.py` parity).
  */
 
+import { RelayerTxType } from "@polymarket/builder-relayer-client";
 import type { ClobClient } from "@polymarket/clob-client";
 import { utils } from "ethers";
 import {
@@ -20,6 +21,7 @@ import {
   checkConditionResolvedOnchain,
   sendRedeemPositions,
   sendRedeemViaGnosisSafe,
+  sendRedeemViaLegacyGaslessRelay,
   sendRedeemViaPolymarketRelayer,
 } from "./ctfRedeem";
 import { requestJson } from "./httpClient";
@@ -416,6 +418,32 @@ export class PolymarketApi {
 
     const rpc =
       (this.cfg.polygonRpcUrl ?? "").trim() || DEFAULT_POLYGON_RPC_URL;
+
+    const legacyKey = (this.cfg.relayerApiKey ?? "").trim();
+    if (legacyKey && this.cfg.signatureType !== 0) {
+      const rtx =
+        this.cfg.signatureType === 1 ? RelayerTxType.PROXY : RelayerTxType.SAFE;
+      try {
+        const out = await sendRedeemViaLegacyGaslessRelay({
+          relayerUrl: this.cfg.relayerUrl,
+          privateKey: pk,
+          chainId: this.cfg.chainId,
+          collateralToken: cc.collateral,
+          ctfContract: cc.conditionalTokens,
+          conditionIdHex: conditionId,
+          relayTxType: rtx,
+          polygonRpcUrl: rpc,
+        });
+        return { ...out, condition_id: conditionId };
+      } catch (e) {
+        return {
+          status: "error",
+          reason: String(e),
+          condition_id: conditionId,
+        };
+      }
+    }
+
     const proxy = (this.cfg.proxyWalletAddress ?? "").trim();
 
     try {
@@ -458,5 +486,49 @@ export class PolymarketApi {
     _outcome: string,
   ): Promise<Record<string, unknown>> {
     return this.redeemPositionsForCondition(conditionId);
+  }
+
+  /** Периодический sweep redeemable-позиций (data-api), как в старом боте. */
+  async sweepRedeemablePositions(): Promise<void> {
+    if (!this.cfg.autoRedeem) return;
+    const user = (
+      this.cfg.proxyWalletAddress ??
+      this.cfg.relayerApiKeyAddress ??
+      ""
+    ).trim();
+    if (!user) return;
+    let wallet: string;
+    try {
+      wallet = utils.getAddress(user);
+    } catch {
+      return;
+    }
+    const base = "https://data-api.polymarket.com/positions";
+    const q = new URLSearchParams({
+      user: wallet,
+      redeemable: "true",
+      sizeThreshold: "0",
+      limit: "100",
+    });
+    const url = `${base}?${q.toString()}`;
+    try {
+      const { data } = await requestJson(url);
+      if (!Array.isArray(data)) return;
+      const seen = new Set<string>();
+      for (const row of data) {
+        if (typeof row !== "object" || row == null) continue;
+        const r = row as Record<string, unknown>;
+        const cid = String(r.conditionId ?? r.condition_id ?? "").trim();
+        if (!cid || seen.has(cid)) continue;
+        seen.add(cid);
+        const tokenId = String(
+          r.asset ?? r.tokenId ?? r.clobTokenId ?? r.clob_token_id ?? "",
+        );
+        const outcome = String(r.outcome ?? "");
+        await this.redeemTokens(cid, tokenId, outcome);
+      }
+    } catch (e) {
+      process.stderr.write(`[sweep redeemable] ${e}\n`);
+    }
   }
 }

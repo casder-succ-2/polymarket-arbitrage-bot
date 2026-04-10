@@ -25,7 +25,7 @@ npm run prod
 - Мониторинг: по умолчанию **WebSocket** `CLOB_WS_URL`; при `MONITOR_USE_HTTP=true` — опрос REST и `CHECK_INTERVAL_MS`.
 - Стратегия: окно дампа, асинхронный Leg1 BUY, ожидание хеджа по `DUMP_HEDGE_SUM_TARGET`, стоп по минутам от **начала периода** рынка, опционально **лимитная лестница** (`DUMP_HEDGE_STOP_LOSS_USE_LIMIT_LADDER`).
 - CLOB: рыночный BUY FOK с бюджетом `shares * reference_price * ORDER_USD_SLIPPAGE_MULT` (`clob_trading` / `@polymarket/clob-client`).
-- Redeem: `AUTO_REDEEM`, при `PROXY_WALLET_ADDRESS` — tx через Safe; при `REDEEM_USE_RELAYER=true` — `POLY_BUILDER_*` и `@polymarket/builder-relayer-client`.
+- Redeem: `AUTO_REDEEM`; при `REDEEM_USE_RELAYER=true` — `POLY_BUILDER_*`; иначе при `SIGNATURE_TYPE` 1/2 и `RELAYER_API_KEY` — gasless `RelayClient` (как раньше); далее при `PROXY_WALLET_ADDRESS` — Safe с gas на EOA; иначе прямой EOA. Раз в ~60 с — опрос data-api и sweep redeemable-позиций.
 - Закрытие периода: проверка резолва, опционально on-chain `payoutDenominator`, отмена ордеров по рынку, PnL.
 
 ## Структура
