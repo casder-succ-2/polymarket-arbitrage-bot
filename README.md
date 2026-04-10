@@ -1,0 +1,68 @@
+# Polymarket dump-and-hedge bot (TypeScript / Node.js)
+
+Бот по стратегии **dump-and-hedge** для рынков Polymarket **Up/Down** (5m / 15m / 1h), порт логики репозитория на Python (`D:\new_bot`): те же env-переменные, WebSocket CLOB, лестница стоп-лосса, redeem через EOA / Gnosis Safe / Relayer.
+
+[![Node.js](https://img.shields.io/badge/Node.js-18+-green.svg)](https://nodejs.org/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5+-blue.svg)](https://www.typescriptlang.org/)
+
+## Быстрый старт
+
+```bash
+npm install
+npm run build
+cp .env.example .env
+# симуляция (без ордеров)
+npm run sim
+# прод: PRODUCTION=true и PRIVATE_KEY в .env
+npm run prod
+```
+
+Логи стратегии: **stderr** + файлы `HISTORY_LOG_DIR/period-<timestamp>.toml` (как Python `history_log.py`).
+
+## Поведение (как в Python)
+
+- Поиск рынка по slug `{asset}-updown-{timeframe}-{period}` (Gamma), сдвиг на 1–3 прошлых периода при необходимости.
+- Мониторинг: по умолчанию **WebSocket** `CLOB_WS_URL`; при `MONITOR_USE_HTTP=true` — опрос REST и `CHECK_INTERVAL_MS`.
+- Стратегия: окно дампа, асинхронный Leg1 BUY, ожидание хеджа по `DUMP_HEDGE_SUM_TARGET`, стоп по минутам от **начала периода** рынка, опционально **лимитная лестница** (`DUMP_HEDGE_STOP_LOSS_USE_LIMIT_LADDER`).
+- CLOB: рыночный BUY FOK с бюджетом `shares * reference_price * ORDER_USD_SLIPPAGE_MULT` (`clob_trading` / `@polymarket/clob-client`).
+- Redeem: `AUTO_REDEEM`, при `PROXY_WALLET_ADDRESS` — tx через Safe; при `REDEEM_USE_RELAYER=true` — `POLY_BUILDER_*` и `@polymarket/builder-relayer-client`.
+- Закрытие периода: проверка резолва, опционально on-chain `payoutDenominator`, отмена ордеров по рынку, PnL.
+
+## Структура
+
+| Файл | Назначение |
+|------|------------|
+| `src/main.ts` | Точка входа, discovery, потоки мониторинга и смены периода |
+| `src/config.ts` | `.env`, таймфреймы 5m/15m/1h |
+| `src/api.ts` | Gamma + CLOB + merge резолва с Gamma |
+| `src/monitor.ts` | WebSocket / HTTP снимки |
+| `src/dumpHedgeTrader.ts` | Фазы стратегии и лестница |
+| `src/clobTrading.ts` | Аутентификация CLOB, market/limit ордера |
+| `src/ctfRedeem.ts` | Redeem CTF (RPC + ethers + опционально relayer) |
+| `src/historyLog.ts` | Лог по периоду |
+| `src/httpClient.ts` | HTTP JSON |
+| `src/contractConfig.ts` | Адреса контрактов (как `py_clob_client.config`) |
+
+## Конфигурация
+
+Полный список переменных — в **`.env.example`** (совместим с Python `.env.example`: `UP_DOWN_TIMEFRAME`, `WEBSOCKET_DEBOUNCE_MS`, `DUMP_HEDGE_STOP_LOSS_USE_LIMIT_LADDER`, `POLY_BUILDER_*`, и т.д.).
+
+## Скрипты
+
+| Команда | Описание |
+|---------|----------|
+| `npm run build` | `tsc` → `dist/` |
+| `npm start` | `node dist/main.js` (режим из `PRODUCTION`) |
+| `npm run sim` | `--simulation` |
+| `npm run prod` | `--production` |
+| `npm run dev` | `tsx src/main.ts` |
+| `npm run lint` / `format` | Biome |
+
+## Замечания
+
+- Торговля и redeem в проде требуют корректных `PRIVATE_KEY`, при типах подписи 1/2 — `PROXY_WALLET_ADDRESS`.
+- На Polygon для прямого redeem нужен **POL** на EOA (gas); для Safe — EOA подписывает execTransaction.
+
+## Лицензия и дисклеймер
+
+См. [LICENSE](LICENSE). Программа для исследований; торговля несёт риски; это не финансовый совет.
